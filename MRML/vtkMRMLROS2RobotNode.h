@@ -3,9 +3,12 @@
 
 // MRML includes
 #include <vtkMRMLNode.h>
+#include <vtkMatrix4x4.h>
 
 #include <vtkSlicerROS2ModuleMRMLExport.h>
 #include <vtkMRMLROS2RobotNodeInternals.h>
+
+// (MoveIt libraries are linked, but no direct usage retained here)
 
 class vtkMRMLROS2NodeNode;
 class vtkMRMLROS2ParameterNode;
@@ -53,6 +56,8 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupTransformTree(void);
   void SetupRobotVisualization(void);
 
+  // (IK methods removed – only library linkage kept for future use)
+
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
   void WriteXML(std::ostream& of, int indent) override;
@@ -84,6 +89,8 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   vtkSmartPointer<vtkMRMLROS2NodeNode> mMRMLROS2Node;
   std::unique_ptr<vtkMRMLROS2RobotNodeInternals> mInternals;
   size_t mNumberOfLinks = 0;
+
+  // (MoveIt member variables removed)
 
 };
 

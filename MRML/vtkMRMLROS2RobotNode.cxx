@@ -13,11 +13,13 @@
 
 #include <vtkMRMLROS2Utils.h>
 #include <vtkMRMLROS2NodeNode.h>
+#include "vtkMRMLROS2NodeInternals.h"
 #include <vtkMRMLROS2ParameterNode.h>
 #include <vtkMRMLROS2Tf2LookupNode.h>
 
 #include <regex>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+// Eigen include removed (was used only for MoveIt IK)
 
 auto const MM_TO_M_CONVERSION = 1000.00;
 
@@ -419,6 +421,8 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
   vtkMRMLReadXMLEndMacro();
   this->EndModify(wasModifying);
 }
+
+
 
 
 void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)

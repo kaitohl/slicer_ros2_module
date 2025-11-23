@@ -51,6 +51,10 @@ set (
   trajectory_msgs
   moveit_msgs
   rosbag2_interfaces
+  # moveit2
+  moveit_core
+  moveit_ros_planning
+  moveit_ros_planning_interface
 )
 
 set (SlicerROS2_ROS_LIBRARIES "")
@@ -144,7 +148,8 @@ slicerMacroBuildLoadableModule(
   SRCS ${MODULE_SRCS}
   MOC_SRCS ${MODULE_MOC_SRCS}
   UI_SRCS ${MODULE_UI_SRCS}
-  TARGET_LIBRARIES ${MODULE_TARGET_LIBRARIES}  ${kdl_parser_LIBRARIES} ${urdf_LIBRARIES} ${tf2_ros_LIBRARIES} ${tf2_LIBRARIES} ${rqt_gui_cpp_LIBRARIES}
+  TARGET_LIBRARIES ${MODULE_TARGET_LIBRARIES}  ${kdl_parser_LIBRARIES} ${urdf_LIBRARIES} ${tf2_ros_LIBRARIES} ${tf2_LIBRARIES} ${rqt_gui_cpp_LIBRARIES} ${moveit_core_LIBRARIES} ${moveit_ros_planning_LIBRARIES} ${moveit_ros_planning_interface_LIBRARIES}
+  TARGET_LIBRARIES ${MODULE_TARGET_LIBRARIES}  ${kdl_parser_LIBRARIES} ${urdf_LIBRARIES} ${tf2_ros_LIBRARIES} ${tf2_LIBRARIES} ${rqt_gui_cpp_LIBRARIES} ${moveit_core_LIBRARIES} ${moveit_ros_planning_LIBRARIES} ${moveit_ros_planning_interface_LIBRARIES}
   RESOURCES ${MODULE_RESOURCES}
   WITH_GENERIC_TESTS
   )
