@@ -8,7 +8,10 @@
 #include <vtkSlicerROS2ModuleMRMLExport.h>
 #include <vtkMRMLROS2RobotNodeInternals.h>
 
-// (MoveIt libraries are linked, but no direct usage retained here)
+// MoveIt includes (libraries are linked)
+#include <moveit/robot_model/robot_model.h>
+#include <moveit/robot_model_loader/robot_model_loader.h>
+#include <moveit/robot_state/robot_state.h>
 
 class vtkMRMLROS2NodeNode;
 class vtkMRMLROS2ParameterNode;
@@ -56,7 +59,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupTransformTree(void);
   void SetupRobotVisualization(void);
 
-  // (IK methods removed – only library linkage kept for future use)
+  // Test MoveIt: parse URDF and return joint count
+  int TestMoveItURDFParse(void);
+
+  // Find IK solution: returns joint values as comma-separated string, empty if failed
+  std::string FindIK(const std::string& groupName, 
+                     vtkMatrix4x4* targetPose, 
+                     const std::string& tipLink,
+                     double timeout = 1.0);
 
   // Save and load
   void ReadXMLAttributes(const char** atts) override;

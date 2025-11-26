@@ -144,6 +144,7 @@ set(${KIT}_TARGET_LIBRARIES
   ${MRML_LIBRARIES}
   SlicerBaseLogic
   ${SlicerROS2_ROS_LIBRARIES}
+  /opt/ros/humble/lib/libmoveit_robot_model_loader.so
   )
 
 SlicerMacroBuildModuleMRML(
