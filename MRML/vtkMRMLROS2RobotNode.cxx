@@ -428,147 +428,100 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
 }
 
 
-int vtkMRMLROS2RobotNode::TestMoveItURDFParse(void)
+bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
 {
+  if (!mMRMLROS2Node) {
+    vtkErrorMacro(<< "setupIK: ROS2 node not available");
+    return false;
+  }
+
   if (mNthRobot.mRobotDescription.empty()) {
-    vtkErrorMacro(<< "TestMoveItURDFParse: robot description not available");
-    return -1;
+    vtkErrorMacro(<< "setupIK: robot description not available");
+    return false;
   }
-  
-  // Use the already-parsed URDF model from mInternals
-  if (!mInternals->mURDFModel.getRoot()) {
-    vtkErrorMacro(<< "TestMoveItURDFParse: URDF model not parsed yet");
-    return -1;
+
+  try {
+    auto node = mMRMLROS2Node->mInternals->mNodePointer;
+    std::string prefix = "robot_description_kinematics." + groupName;
+
+    // Helper for declaring/updating parameters
+    auto ensureParam = [&](const std::string& name, auto value) {
+      if (!node->has_parameter(name)) {
+        node->declare_parameter(name, value);
+      } else {
+        node->set_parameter(rclcpp::Parameter(name, value));
+      }
+    };
+
+    // Set kinematics parameters
+    ensureParam(prefix + ".kinematics_solver", std::string("pick_ik/PickIkPlugin"));
+    ensureParam(prefix + ".kinematics_solver_search_resolution", 0.005);
+    ensureParam(prefix + ".kinematics_solver_timeout", 0.05);
+
+    // Load and cache RobotModel
+    RobotModelLoaderPtr = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
+    RobotModelPtr = RobotModelLoaderPtr->getModel();
+
+    if (!RobotModelPtr) {
+      vtkErrorMacro(<< "setupIK: Failed to load RobotModel");
+      return false;
+    }
+
+    // Cache JointModelGroup
+    JointModelGroupPtr = RobotModelPtr->getJointModelGroup(groupName);
+    if (!JointModelGroupPtr) {
+      vtkErrorMacro(<< "setupIK: joint model group '" << groupName << "' not found");
+      return false;
+    }
+
+    // Verify solver is available
+    const auto& solver = JointModelGroupPtr->getSolverInstance();
+    if (!solver) {
+      vtkErrorMacro(<< "setupIK: no kinematics solver for group '" << groupName << "'");
+      return false;
+    }
+
+    IKGroupName = groupName;
+    return true;
   }
-  
-  // Count joints in the existing parsed model
-  int joint_count = mInternals->mURDFModel.joints_.size();
-  vtkDebugMacro(<< "TestMoveItURDFParse: URDF has " << joint_count << " joints");
-  
-  return joint_count;
+  catch (const std::exception& e) {
+    vtkErrorMacro(<< "setupIK: exception - " << e.what());
+    return false;
+  }
 }
 
 
-std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName,
-                                          vtkMatrix4x4* targetPose,
-                                          const std::string& tipLink,
-                                          double timeout)
+std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
 {
-  if (!mMRMLROS2Node) {
-    vtkErrorMacro(<< "FindIK: ROS2 node not available");
-    return "";
-  }
-
-  if (mNthRobot.mRobotDescription.empty()) {
-    vtkErrorMacro(<< "FindIK: robot description not available");
-    return "";
-  }
-
   if (!targetPose) {
     vtkErrorMacro(<< "FindIK: target pose is null");
     return "";
   }
 
+  // Setup IK if needed (or if group changed)
+  if (IKGroupName != groupName || !RobotModelPtr || !JointModelGroupPtr) {
+    if (!setupIK(groupName)) {
+      vtkErrorMacro(<< "FindIK: setupIK failed for group '" << groupName << "'");
+      return "";
+    }
+  }
+
   try {
-    // Use RobotModelLoader to load robot with kinematics parameters
-    auto node = mMRMLROS2Node->mInternals->mNodePointer;
-    
-    // Copy all kinematics parameters from /move_group to our node
-    std::string kinematics_param_prefix = "robot_description_kinematics." + groupName;
-    
-    // Declare the main kinematics parameters
-    std::vector<std::string> param_names = {
-      kinematics_param_prefix + ".kinematics_solver",
-      kinematics_param_prefix + ".kinematics_solver_search_resolution",
-      kinematics_param_prefix + ".kinematics_solver_timeout"
-    };
-    
-    for (const auto& param_name : param_names) {
-      try {
-        // Try to get parameter from /move_group first
-        std::cout << "FindIK: trying to fetch parameter '" << param_name << "' from /move_group" << std::endl;
-        auto move_group_client = std::make_shared<rclcpp::SyncParametersClient>(node, "/move_group");
-        if (move_group_client->wait_for_service(std::chrono::seconds(1))) {
-          auto params = move_group_client->get_parameters({param_name});
-          if (!params.empty() && params[0].get_type() != rclcpp::ParameterType::PARAMETER_NOT_SET) {
-            // Only use the parameter if it has a valid value
-            if (!node->has_parameter(param_name)) {
-              node->declare_parameter(param_name, params[0].get_parameter_value());
-            } else {
-              node->set_parameter(rclcpp::Parameter(param_name, params[0].get_parameter_value()));
-            }
-            std::cout << "FindIK: successfully copied parameter '" << param_name << "' from /move_group" << std::endl;
-            continue;
-          } else {
-            vtkDebugMacro(<< "FindIK: parameter '" << param_name << "' not set on /move_group, using fallback");
-          }
-        } else {
-          vtkDebugMacro(<< "FindIK: /move_group parameter service not available");
-        }
-        
-        // Fallback values if /move_group not available or parameter not set
-        if (param_name.find("kinematics_solver") != std::string::npos && 
-            param_name.find("search_resolution") == std::string::npos &&
-            param_name.find("timeout") == std::string::npos) {
-          if (!node->has_parameter(param_name)) {
-            node->declare_parameter(param_name, "pick_ik/PickIkPlugin");
-          } else {
-            node->set_parameter(rclcpp::Parameter(param_name, "pick_ik/PickIkPlugin"));
-          }
-          vtkDebugMacro(<< "FindIK: set fallback kinematics_solver = pick_ik/PickIkPlugin");
-        } else if (param_name.find("search_resolution") != std::string::npos) {
-          if (!node->has_parameter(param_name)) {
-            node->declare_parameter(param_name, 0.005);
-          } else {
-            node->set_parameter(rclcpp::Parameter(param_name, 0.005));
-          }
-          vtkDebugMacro(<< "FindIK: set fallback search_resolution = 0.005");
-        } else if (param_name.find("timeout") != std::string::npos) {
-          if (!node->has_parameter(param_name)) {
-            node->declare_parameter(param_name, 0.05);
-          } else {
-            node->set_parameter(rclcpp::Parameter(param_name, 0.05));
-          }
-          vtkDebugMacro(<< "FindIK: set fallback timeout = 0.05");
-        }
-      } catch (const std::exception& e) {
-        vtkWarningMacro(<< "FindIK: could not set parameter " << param_name << ": " << e.what());
-      }
+    // Create robot state for solving
+    moveit::core::RobotState robot_state(RobotModelPtr);
+
+    if (!seedJointValues.empty()) {
+      robot_state.setJointGroupPositions(JointModelGroupPtr, seedJointValues);
+    } else {
+      robot_state.setToDefaultValues();
     }
-    
-    vtkDebugMacro(<< "FindIK: finished setting up kinematics parameters, loading RobotModel...");
-    
-    robot_model_loader::RobotModelLoader robot_model_loader(node, "robot_description");
-    auto robot_model = robot_model_loader.getModel();
-    
-    if (!robot_model) {
-      vtkErrorMacro(<< "FindIK: failed to load robot model");
-      return "";
-    }
-    
-    auto joint_model_group = robot_model->getJointModelGroup(groupName);
-    if (!joint_model_group) {
-      vtkErrorMacro(<< "FindIK: joint model group '" << groupName << "' not found");
-      return "";
-    }
-    
-    // Get the kinematics solver for this group (loaded from parameters)
-    const auto& solver = joint_model_group->getSolverInstance();
-    if (!solver) {
-      vtkErrorMacro(<< "FindIK: no kinematics solver for group '" << groupName << "'");
-      return "";
-    }
-    
-    // Create a robot state for seed
-    moveit::core::RobotState robot_state(robot_model);
-    robot_state.setToDefaultValues();
-    
+
     // Convert vtkMatrix4x4 to geometry_msgs Pose
     geometry_msgs::msg::Pose pose_msg;
     pose_msg.position.x = targetPose->GetElement(0, 3) / 1000.0;  // mm to m
     pose_msg.position.y = targetPose->GetElement(1, 3) / 1000.0;
     pose_msg.position.z = targetPose->GetElement(2, 3) / 1000.0;
-    
+
     // Extract rotation matrix and convert to quaternion
     Eigen::Matrix3d rot_matrix;
     for (int i = 0; i < 3; ++i) {
@@ -583,19 +536,12 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName,
     pose_msg.orientation.w = quat.w();
 
     // Call IK using setFromIK
-    bool found_ik = robot_state.setFromIK(joint_model_group, pose_msg, tipLink, timeout);
-    
+    bool found_ik = robot_state.setFromIK(JointModelGroupPtr, pose_msg, tipLink, timeout);
+
     // Extract joint values (or create NaN values if no solution found)
     std::vector<double> solution;
-    robot_state.copyJointGroupPositions(joint_model_group, solution);
-    
-    if (!found_ik) {
-      // Fill solution with NaN
-      for (size_t i = 0; i < solution.size(); ++i) {
-        solution[i] = std::numeric_limits<double>::quiet_NaN();
-      }
-    }
-    
+    robot_state.copyJointGroupPositions(JointModelGroupPtr, solution);
+
     // Convert to comma-separated string
     std::ostringstream oss;
     for (size_t i = 0; i < solution.size(); ++i) {
@@ -610,8 +556,6 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName,
     return "";
   }
 }
-
-
 
 
 void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)

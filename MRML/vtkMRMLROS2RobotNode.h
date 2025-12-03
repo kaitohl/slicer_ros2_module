@@ -59,13 +59,15 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupTransformTree(void);
   void SetupRobotVisualization(void);
 
-  // Test MoveIt: parse URDF and return joint count
-  int TestMoveItURDFParse(void);
+  // Setup IK: copy kinematics parameters, load robot model and joint group
+  bool setupIK(const std::string & groupName);
 
   // Find IK solution: returns joint values as comma-separated string, empty if failed
+  // seedJointValues: optional seed state for IK solver (uses default if empty)
   std::string FindIK(const std::string& groupName, 
                      vtkMatrix4x4* targetPose, 
                      const std::string& tipLink,
+                     const std::vector<double>& seedJointValues,
                      double timeout = 1.0);
 
   // Save and load
@@ -100,7 +102,11 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   std::unique_ptr<vtkMRMLROS2RobotNodeInternals> mInternals;
   size_t mNumberOfLinks = 0;
 
-  // (MoveIt member variables removed)
+  // Cached MoveIt objects for IK
+  std::unique_ptr<robot_model_loader::RobotModelLoader> RobotModelLoaderPtr;
+  moveit::core::RobotModelPtr RobotModelPtr;
+  const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
+  std::string IKGroupName;
 
 };
 
