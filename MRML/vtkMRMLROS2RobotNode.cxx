@@ -529,6 +529,16 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix
         rot_matrix(i, j) = targetPose->GetElement(i, j);
       }
     }
+
+    // Optional corrective rotation: if the tip link is the final tool frame
+    // whose native Z-axis points up, rotate -90 deg about Y to make X-forward.
+
+    Eigen::AngleAxisd rotX(-M_PI/2.0, Eigen::Vector3d::UnitX());
+    Eigen::AngleAxisd rotZ(-M_PI/2.0, Eigen::Vector3d::UnitZ());
+
+    rot_matrix = (rotZ.toRotationMatrix() * rotX.toRotationMatrix()) * rot_matrix;
+    
+
     Eigen::Quaterniond quat(rot_matrix);
     pose_msg.orientation.x = quat.x();
     pose_msg.orientation.y = quat.y();
