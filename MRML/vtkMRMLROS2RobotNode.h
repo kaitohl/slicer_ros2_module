@@ -9,9 +9,18 @@
 #include <vtkMRMLROS2RobotNodeInternals.h>
 
 // MoveIt includes (libraries are linked)
-#include <moveit/robot_model/robot_model.h>
-#include <moveit/robot_model_loader/robot_model_loader.h>
-#include <moveit/robot_state/robot_state.h>
+// #include <moveit/robot_model/robot_model.h>
+// #include <moveit/robot_model_loader/robot_model_loader.h>
+// #include <moveit/robot_state/robot_state.h>
+
+// KDL includes
+#include <kdl/chain.hpp>
+#include <kdl/chainfksolverpos_recursive.hpp>
+#include <kdl/chainiksolverpos_nr.hpp>
+#include <kdl/chainiksolverpos_nr_jl.hpp>
+#include <kdl/chainiksolvervel_pinv.hpp>
+#include <kdl/tree.hpp>
+#include <kdl_parser/kdl_parser.hpp>
 
 class vtkMRMLROS2NodeNode;
 class vtkMRMLROS2ParameterNode;
@@ -59,16 +68,24 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupTransformTree(void);
   void SetupRobotVisualization(void);
 
-  // Setup IK: copy kinematics parameters, load robot model and joint group
-  bool setupIK(const std::string & groupName);
+  // MoveIt IK methods (commented out for faster build)
+  // bool setupIK(const std::string & groupName);
+  // std::string FindIK(const std::string& groupName, 
+  //                    vtkMatrix4x4* targetPose, 
+  //                    const std::string& tipLink,
+  //                    const std::vector<double>& seedJointValues,
+  //                    double timeout = 1.0);
 
-  // Find IK solution: returns joint values as comma-separated string, empty if failed
-  // seedJointValues: optional seed state for IK solver (uses default if empty)
-  std::string FindIK(const std::string& groupName, 
-                     vtkMatrix4x4* targetPose, 
-                     const std::string& tipLink,
-                     const std::vector<double>& seedJointValues,
-                     double timeout = 1.0);
+  // KDL IK methods
+  // Setup KDL IK solver (no joint limits)
+  bool setupKDLIK(const std::string& rootLink, const std::string& tipLink);
+  
+  // Setup KDL IK solver with joint limits
+  bool setupKDLIKWithLimits(const std::string& rootLink, const std::string& tipLink);
+  
+  // Find IK using KDL (uses NR or NR_JL depending on setup)
+  std::string FindKDLIK(vtkMatrix4x4* targetPose, 
+                        const std::vector<double>& seedJointValues);
 
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
@@ -102,11 +119,24 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   std::unique_ptr<vtkMRMLROS2RobotNodeInternals> mInternals;
   size_t mNumberOfLinks = 0;
 
-  // Cached MoveIt objects for IK
-  std::unique_ptr<robot_model_loader::RobotModelLoader> RobotModelLoaderPtr;
-  moveit::core::RobotModelPtr RobotModelPtr;
-  const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
-  std::string IKGroupName;
+  // Cached MoveIt objects for IK (commented out for faster build)
+  // std::unique_ptr<robot_model_loader::RobotModelLoader> RobotModelLoaderPtr;
+  // moveit::core::RobotModelPtr RobotModelPtr;
+  // const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
+  // std::string IKGroupName;
+
+
+  // KDL solvers
+  std::unique_ptr<KDL::Chain> KDLChain;
+  std::unique_ptr<KDL::ChainFkSolverPos_recursive> KDLFkSolver;
+  std::unique_ptr<KDL::ChainIkSolverVel_pinv> KDLIkSolverVel;
+  std::unique_ptr<KDL::ChainIkSolverPos_NR> KDLIkSolver;
+  std::unique_ptr<KDL::ChainIkSolverPos_NR_JL> KDLIkSolverJL;
+  KDL::JntArray KDLJointMin;
+  KDL::JntArray KDLJointMax;
+  std::string KDLRootLink;
+  std::string KDLTipLink;
+  bool KDLUseJointLimits = false;
 
 };
 

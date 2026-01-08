@@ -23,8 +23,17 @@
 #include <eigen3/Eigen/Geometry>
 #include <sstream>
 
-// MoveIt kinematics includes
-#include <moveit/robot_model_loader/robot_model_loader.h>
+// MoveIt kinematics includes (commented out for faster build)
+// #include <moveit/robot_model_loader/robot_model_loader.h>
+
+// KDL includes
+#include <kdl/chain.hpp>
+#include <kdl/chainfksolverpos_recursive.hpp>
+#include <kdl/chainiksolverpos_nr.hpp>
+#include <kdl/chainiksolverpos_nr_jl.hpp>
+#include <kdl/chainiksolvervel_pinv.hpp>
+#include <kdl/tree.hpp>
+#include <kdl_parser/kdl_parser.hpp>
 
 auto const MM_TO_M_CONVERSION = 1000.00;
 
@@ -427,7 +436,8 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
   this->EndModify(wasModifying);
 }
 
-
+/*
+// MoveIt IK implementation (commented out for faster build)
 bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
 {
   if (!mMRMLROS2Node) {
@@ -454,7 +464,7 @@ bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
     };
 
     // Set kinematics parameters
-    ensureParam(prefix + ".kinematics_solver", std::string("pick_ik/PickIkPlugin"));
+    ensureParam(prefix + ".kinematics_solver", std::string("kdl_kinematics_plugin/KDLKinematicsPlugin"));
     ensureParam(prefix + ".kinematics_solver_search_resolution", 0.005);
     ensureParam(prefix + ".kinematics_solver_timeout", 0.05);
 
@@ -530,9 +540,6 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix
       }
     }
 
-    // Optional corrective rotation: if the tip link is the final tool frame
-    // whose native Z-axis points up, rotate -90 deg about Y to make X-forward.
-
     Eigen::AngleAxisd rotX(-M_PI/2.0, Eigen::Vector3d::UnitX());
     Eigen::AngleAxisd rotZ(-M_PI/2.0, Eigen::Vector3d::UnitZ());
 
@@ -563,6 +570,283 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix
   }
   catch (const std::exception& e) {
     vtkErrorMacro(<< "FindIK: exception - " << e.what());
+    return "";
+  }
+}
+*/
+
+// KDL IK Implementation
+bool vtkMRMLROS2RobotNode::setupKDLIK(const std::string& rootLink, const std::string& tipLink)
+{
+  if (mNthRobot.mRobotDescription.empty()) {
+    vtkErrorMacro(<< "setupKDLIK: robot description not available");
+    return false;
+  }
+
+  try {
+    // Parse URDF to KDL tree
+    KDL::Tree kdlTree;
+    if (!kdl_parser::treeFromString(mNthRobot.mRobotDescription, kdlTree)) {
+      vtkErrorMacro(<< "setupKDLIK: Failed to parse URDF to KDL tree");
+      return false;
+    }
+
+    // Extract chain from tree
+    KDLChain = std::make_unique<KDL::Chain>();
+    if (!kdlTree.getChain(rootLink, tipLink, *KDLChain)) {
+      vtkErrorMacro(<< "setupKDLIK: Failed to extract chain from " << rootLink << " to " << tipLink);
+      return false;
+    }
+
+    // Create solvers (NR without joint limits)
+    KDLFkSolver = std::make_unique<KDL::ChainFkSolverPos_recursive>(*KDLChain);
+    KDLIkSolverVel = std::make_unique<KDL::ChainIkSolverVel_pinv>(*KDLChain);
+    KDLIkSolver = std::make_unique<KDL::ChainIkSolverPos_NR>(
+        *KDLChain, *KDLFkSolver, *KDLIkSolverVel, 100, 1e-6);
+
+    KDLRootLink = rootLink;
+    KDLTipLink = tipLink;
+    KDLUseJointLimits = false;
+
+    vtkInfoMacro(<< "setupKDLIK: Successfully initialized KDL IK solver (NR) for chain " 
+                 << rootLink << " -> " << tipLink 
+                 << " with " << KDLChain->getNrOfJoints() << " joints");
+    return true;
+  }
+  catch (const std::exception& e) {
+    vtkErrorMacro(<< "setupKDLIK: exception - " << e.what());
+    return false;
+  }
+}
+
+
+bool vtkMRMLROS2RobotNode::setupKDLIKWithLimits(const std::string& rootLink, const std::string& tipLink)
+{
+  if (mNthRobot.mRobotDescription.empty()) {
+    vtkErrorMacro(<< "setupKDLIKWithLimits: robot description not available");
+    return false;
+  }
+
+  try {
+    // Parse URDF to KDL tree
+    KDL::Tree kdlTree;
+    if (!kdl_parser::treeFromString(mNthRobot.mRobotDescription, kdlTree)) {
+      vtkErrorMacro(<< "setupKDLIKWithLimits: Failed to parse URDF to KDL tree");
+      return false;
+    }
+
+    // Extract chain from tree
+    KDLChain = std::make_unique<KDL::Chain>();
+    if (!kdlTree.getChain(rootLink, tipLink, *KDLChain)) {
+      vtkErrorMacro(<< "setupKDLIKWithLimits: Failed to extract chain from " << rootLink << " to " << tipLink);
+      return false;
+    }else{
+      vtkInfoMacro(<< "setupKDLIKWithLimits: Successfully extracted chain from " << rootLink << " to " << tipLink);
+    }
+
+    unsigned int nj = KDLChain->getNrOfJoints();
+
+    // Initialize joint limits arrays
+    KDLJointMin = KDL::JntArray(nj);
+    KDLJointMax = KDL::JntArray(nj);
+
+    // Extract joint limits from URDF
+    urdf::Model urdfModel;
+    if (!urdfModel.initString(mNthRobot.mRobotDescription)) {
+      vtkErrorMacro(<< "setupKDLIKWithLimits: Failed to parse URDF model");
+      return false;
+    }
+//  unsigned int joint_idx = 0;
+
+// for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
+
+// const KDL::Segment& segment = KDLChain->getSegment(i);
+
+// const KDL::Joint& joint = segment.getJoint();
+
+// if (joint.getType() != KDL::Joint::None) {
+
+// std::string joint_name = joint.getName();
+
+// auto urdf_joint = urdfModel.getJoint(joint_name);
+
+// if (urdf_joint && urdf_joint->limits) {
+
+// KDLJointMin(joint_idx) = urdf_joint->limits->lower;
+
+// KDLJointMax(joint_idx) = urdf_joint->limits->upper;
+
+// } else {
+
+// // Default limits if not specified
+
+// KDLJointMin(joint_idx) = -M_PI;
+
+// KDLJointMax(joint_idx) = M_PI;
+
+// vtkWarningMacro(<< "setupKDLIKWithLimits: No limits found for joint " << joint_name
+
+// << ", using default [-pi, pi]");
+
+// }
+
+// joint_idx++;
+
+// }
+
+// }
+  unsigned int joint_idx = 0;
+      for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
+        const KDL::Segment& segment = KDLChain->getSegment(i);
+        const KDL::Joint& joint = segment.getJoint();
+        
+        if (joint.getType() != KDL::Joint::None) {
+          std::string joint_name = joint.getName();
+          auto urdf_joint = urdfModel.getJoint(joint_name);
+          
+          // --- FIX START ---
+          if (urdf_joint && urdf_joint->type == urdf::Joint::CONTINUOUS) {
+              // Continuous joints don't have position limits in URDF.
+              // Give them a wide range (e.g., -2*PI to +2*PI or larger) so the solver can use them.
+              KDLJointMin(joint_idx) = -2 * M_PI; 
+              KDLJointMax(joint_idx) = 2 * M_PI;
+              vtkInfoMacro(<< "  Joint " << joint_name << " is CONTINUOUS. Setting wide limits [-2pi, 2pi].");
+          }
+          else if (urdf_joint && urdf_joint->limits) {
+            KDLJointMin(joint_idx) = urdf_joint->limits->lower;
+            KDLJointMax(joint_idx) = urdf_joint->limits->upper;
+          } 
+          else {
+            // Default limits if not specified
+            KDLJointMin(joint_idx) = -M_PI;
+            KDLJointMax(joint_idx) = M_PI;
+          }
+          // --- FIX END ---
+          
+          joint_idx++;
+        }
+      }
+
+    // print joint names
+    for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
+      const KDL::Segment& segment = KDLChain->getSegment(i);
+      const KDL::Joint& joint = segment.getJoint();
+      if (joint.getType() != KDL::Joint::None) {
+        std::string joint_name = joint.getName();
+        vtkInfoMacro(<< "  Joint " << i << ": " << joint_name);
+      }
+    }
+
+    // Create solvers (NR_JL with joint limits)
+    KDLFkSolver = std::make_unique<KDL::ChainFkSolverPos_recursive>(*KDLChain);
+    KDLIkSolverVel = std::make_unique<KDL::ChainIkSolverVel_pinv>(*KDLChain);
+    KDLIkSolverJL = std::make_unique<KDL::ChainIkSolverPos_NR_JL>(
+        *KDLChain, KDLJointMin, KDLJointMax, *KDLFkSolver, *KDLIkSolverVel, 100, 1e-6);
+
+    KDLRootLink = rootLink;
+    KDLTipLink = tipLink;
+    KDLUseJointLimits = true;
+
+    vtkInfoMacro(<< "setupKDLIKWithLimits: Successfully initialized KDL IK solver (NR_JL) for chain " 
+                 << rootLink << " -> " << tipLink 
+                 << " with " << KDLChain->getNrOfJoints() << " joints and joint limits");
+
+    // print joint limits for debugging
+    for (unsigned int j = 0; j < nj; j++) {
+      vtkInfoMacro(<< "  Joint " << j << " limits: [" 
+                   << KDLJointMin(j) << ", " << KDLJointMax(j) << "]");
+    } 
+    return true;
+  }
+  catch (const std::exception& e) {
+    vtkErrorMacro(<< "setupKDLIKWithLimits: exception - " << e.what());
+    return false;
+  }
+}
+
+
+std::string vtkMRMLROS2RobotNode::FindKDLIK(vtkMatrix4x4* targetPose, 
+                                             const std::vector<double>& seedJointValues)
+{
+  if (!targetPose) {
+    vtkErrorMacro(<< "FindKDLIK: target pose is null");
+    return "";
+  }
+
+  if (!KDLUseJointLimits && !KDLIkSolver) {
+    vtkErrorMacro(<< "FindKDLIK: KDL IK solver not initialized. Call setupKDLIK or setupKDLIKWithLimits first");
+    return "";
+  }
+
+  if (KDLUseJointLimits && !KDLIkSolverJL) {
+    vtkErrorMacro(<< "FindKDLIK: KDL IK solver with joint limits not initialized. Call setupKDLIKWithLimits first");
+    return "";
+  }
+
+  try {
+    // Convert vtkMatrix4x4 to KDL Frame
+    KDL::Frame targetFrame;
+    
+    // Set position (convert mm to m)
+    targetFrame.p.x(targetPose->GetElement(0, 3) / 1000.0);
+    targetFrame.p.y(targetPose->GetElement(1, 3) / 1000.0);
+    targetFrame.p.z(targetPose->GetElement(2, 3) / 1000.0);
+    
+    // Set rotation
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        targetFrame.M(i, j) = targetPose->GetElement(i, j);
+      }
+    }
+    //print targetFrame
+    vtkInfoMacro(<< "FindKDLIK: Target Frame Position (m): [" 
+                 << targetFrame.p.x() << ", " 
+                 << targetFrame.p.y() << ", " 
+                 << targetFrame.p.z() << "]");
+    vtkInfoMacro(<< "FindKDLIK: Target Frame Rotation Matrix: ");
+    for (int i = 0; i < 3; i++) {
+      vtkInfoMacro(<< "  [" 
+                   << targetFrame.M(i,0) << ", " 
+                   << targetFrame.M(i,1) << ", " 
+                   << targetFrame.M(i,2) << "]");
+    }
+    // Setup seed configuration
+    KDL::JntArray qSeed(KDLChain->getNrOfJoints());
+    if (!seedJointValues.empty() && seedJointValues.size() == KDLChain->getNrOfJoints()) {
+      for (size_t i = 0; i < seedJointValues.size(); i++) {
+        qSeed(i) = seedJointValues[i];
+      }
+    } else {
+      // Use zeros as default seed
+      qSeed.data.setZero();
+    }
+
+    // Solve IK
+    KDL::JntArray qSolution(KDLChain->getNrOfJoints());
+    int result;
+    
+    if (KDLUseJointLimits) {
+      result = KDLIkSolverJL->CartToJnt(qSeed, targetFrame, qSolution);
+    } else {
+      result = KDLIkSolver->CartToJnt(qSeed, targetFrame, qSolution);
+    }
+
+    if (result < 0) {
+      vtkWarningMacro(<< "FindKDLIK: IK solution not found (error code: " << result << ")");
+      return "";
+    }
+
+    // Convert solution to comma-separated string
+    std::ostringstream oss;
+    for (unsigned int i = 0; i < qSolution.rows(); i++) {
+      if (i > 0) oss << ",";
+      oss << qSolution(i);
+    }
+
+    return oss.str();
+  }
+  catch (const std::exception& e) {
+    vtkErrorMacro(<< "FindKDLIK: exception - " << e.what());
     return "";
   }
 }

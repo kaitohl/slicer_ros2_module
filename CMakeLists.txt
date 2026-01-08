@@ -57,9 +57,11 @@ set (
   trajectory_msgs
   moveit_msgs
   rosbag2_interfaces
-  # moveit2 
-  moveit_ros_planning
-  moveit_core
+  # moveit2 (commented out for faster build)
+  # moveit_ros_planning
+  # moveit_core
+  # KDL solver
+  orocos_kdl
 )
 
 set (SlicerROS2_ROS_LIBRARIES "")
@@ -69,6 +71,11 @@ foreach (dep ${SlicerROS2_ROS_DEPENDENCIES})
   include_directories (${${dep}_INCLUDE_DIRS})
   set (SlicerROS2_ROS_LIBRARIES ${SlicerROS2_ROS_LIBRARIES} ${${dep}_LIBRARIES})
 endforeach ()
+
+# Explicitly add kdl_parser libraries
+if (kdl_parser_FOUND)
+  set (SlicerROS2_ROS_LIBRARIES ${SlicerROS2_ROS_LIBRARIES} ${kdl_parser_LIBRARIES})
+endif ()
 
 # preserve ament install prefix to create a dummy setup.bash
 if (NOT DEFINED SlicerROS2_AMENT_INSTALL_PREFIX)
@@ -159,7 +166,7 @@ slicerMacroBuildLoadableModule(
   SRCS ${MODULE_SRCS}
   MOC_SRCS ${MODULE_MOC_SRCS}
   UI_SRCS ${MODULE_UI_SRCS}
-  TARGET_LIBRARIES ${MODULE_TARGET_LIBRARIES}  ${kdl_parser_LIBRARIES} ${urdf_LIBRARIES} ${tf2_ros_LIBRARIES} ${tf2_LIBRARIES} ${rqt_gui_cpp_LIBRARIES} ${moveit_ros_planning_LIBRARIES} ${moveit_core_LIBRARIES} /opt/ros/humble/lib/libmoveit_robot_model_loader.so
+  TARGET_LIBRARIES ${MODULE_TARGET_LIBRARIES}  ${kdl_parser_LIBRARIES} ${orocos_kdl_LIBRARIES} ${urdf_LIBRARIES} ${tf2_ros_LIBRARIES} ${tf2_LIBRARIES} ${rqt_gui_cpp_LIBRARIES}
   RESOURCES ${MODULE_RESOURCES}
   WITH_GENERIC_TESTS
   )
