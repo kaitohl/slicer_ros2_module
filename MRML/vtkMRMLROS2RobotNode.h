@@ -76,16 +76,10 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   //                    const std::vector<double>& seedJointValues,
   //                    double timeout = 1.0);
 
-  // KDL IK methods
-  // Setup KDL IK solver (no joint limits)
+  // KDL Setup and IK methods
   bool setupKDLIK(const std::string& rootLink, const std::string& tipLink);
-  
-  // Setup KDL IK solver with joint limits
   bool setupKDLIKWithLimits(const std::string& rootLink, const std::string& tipLink);
-  
-  // Find IK using KDL (uses NR or NR_JL depending on setup)
-  std::string FindKDLIK(vtkMatrix4x4* targetPose, 
-                        const std::vector<double>& seedJointValues);
+  std::string FindKDLIK(vtkMatrix4x4* targetPose,const std::vector<double>& seedJointValues);
 
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
@@ -124,7 +118,6 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   // moveit::core::RobotModelPtr RobotModelPtr;
   // const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
   // std::string IKGroupName;
-
 
   // KDL solvers
   std::unique_ptr<KDL::Chain> KDLChain;

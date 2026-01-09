@@ -656,45 +656,7 @@ bool vtkMRMLROS2RobotNode::setupKDLIKWithLimits(const std::string& rootLink, con
       vtkErrorMacro(<< "setupKDLIKWithLimits: Failed to parse URDF model");
       return false;
     }
-//  unsigned int joint_idx = 0;
 
-// for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
-
-// const KDL::Segment& segment = KDLChain->getSegment(i);
-
-// const KDL::Joint& joint = segment.getJoint();
-
-// if (joint.getType() != KDL::Joint::None) {
-
-// std::string joint_name = joint.getName();
-
-// auto urdf_joint = urdfModel.getJoint(joint_name);
-
-// if (urdf_joint && urdf_joint->limits) {
-
-// KDLJointMin(joint_idx) = urdf_joint->limits->lower;
-
-// KDLJointMax(joint_idx) = urdf_joint->limits->upper;
-
-// } else {
-
-// // Default limits if not specified
-
-// KDLJointMin(joint_idx) = -M_PI;
-
-// KDLJointMax(joint_idx) = M_PI;
-
-// vtkWarningMacro(<< "setupKDLIKWithLimits: No limits found for joint " << joint_name
-
-// << ", using default [-pi, pi]");
-
-// }
-
-// joint_idx++;
-
-// }
-
-// }
   unsigned int joint_idx = 0;
       for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
         const KDL::Segment& segment = KDLChain->getSegment(i);
@@ -704,15 +666,14 @@ bool vtkMRMLROS2RobotNode::setupKDLIKWithLimits(const std::string& rootLink, con
           std::string joint_name = joint.getName();
           auto urdf_joint = urdfModel.getJoint(joint_name);
           
-          // --- FIX START ---
+          // Check if joint is continuous
           if (urdf_joint && urdf_joint->type == urdf::Joint::CONTINUOUS) {
-              // Continuous joints don't have position limits in URDF.
-              // Give them a wide range (e.g., -2*PI to +2*PI or larger) so the solver can use them.
               KDLJointMin(joint_idx) = -2 * M_PI; 
               KDLJointMax(joint_idx) = 2 * M_PI;
               vtkInfoMacro(<< "  Joint " << joint_name << " is CONTINUOUS. Setting wide limits [-2pi, 2pi].");
-          }
+          } 
           else if (urdf_joint && urdf_joint->limits) {
+            // Otherwise, get limits if available
             KDLJointMin(joint_idx) = urdf_joint->limits->lower;
             KDLJointMax(joint_idx) = urdf_joint->limits->upper;
           } 
@@ -721,21 +682,10 @@ bool vtkMRMLROS2RobotNode::setupKDLIKWithLimits(const std::string& rootLink, con
             KDLJointMin(joint_idx) = -M_PI;
             KDLJointMax(joint_idx) = M_PI;
           }
-          // --- FIX END ---
           
           joint_idx++;
         }
       }
-
-    // print joint names
-    for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
-      const KDL::Segment& segment = KDLChain->getSegment(i);
-      const KDL::Joint& joint = segment.getJoint();
-      if (joint.getType() != KDL::Joint::None) {
-        std::string joint_name = joint.getName();
-        vtkInfoMacro(<< "  Joint " << i << ": " << joint_name);
-      }
-    }
 
     // Create solvers (NR_JL with joint limits)
     KDLFkSolver = std::make_unique<KDL::ChainFkSolverPos_recursive>(*KDLChain);
@@ -798,18 +748,7 @@ std::string vtkMRMLROS2RobotNode::FindKDLIK(vtkMatrix4x4* targetPose,
         targetFrame.M(i, j) = targetPose->GetElement(i, j);
       }
     }
-    //print targetFrame
-    vtkInfoMacro(<< "FindKDLIK: Target Frame Position (m): [" 
-                 << targetFrame.p.x() << ", " 
-                 << targetFrame.p.y() << ", " 
-                 << targetFrame.p.z() << "]");
-    vtkInfoMacro(<< "FindKDLIK: Target Frame Rotation Matrix: ");
-    for (int i = 0; i < 3; i++) {
-      vtkInfoMacro(<< "  [" 
-                   << targetFrame.M(i,0) << ", " 
-                   << targetFrame.M(i,1) << ", " 
-                   << targetFrame.M(i,2) << "]");
-    }
+
     // Setup seed configuration
     KDL::JntArray qSeed(KDLChain->getNrOfJoints());
     if (!seedJointValues.empty() && seedJointValues.size() == KDLChain->getNrOfJoints()) {
