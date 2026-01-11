@@ -77,9 +77,15 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   //                    double timeout = 1.0);
 
   // KDL Setup and IK methods
-  bool setupKDLIK(const std::string& rootLink, const std::string& tipLink);
-  bool setupKDLIKWithLimits(const std::string& rootLink, const std::string& tipLink);
+  bool SetupKDLIKWithLimits(void);
   std::string FindKDLIK(vtkMatrix4x4* targetPose,const std::vector<double>& seedJointValues);
+
+  // KDL Chain information methods
+  std::vector<std::string> GetSegments();
+  std::vector<std::string> GetJoints();
+  bool ComputeKDLFK(const std::vector<double>& jointValues,
+                    vtkMatrix4x4* outTransform,
+                    const std::string& linkName = "");
 
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
