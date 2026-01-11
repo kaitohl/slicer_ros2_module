@@ -8,6 +8,7 @@
 
 #include <vtkMRMLScene.h>
 #include <vtkMRMLTransformNode.h>
+#include <vtkMRMLLinearTransformNode.h>
 #include <vtkMRMLModelNode.h>
 #include <vtkMRMLModelDisplayNode.h>
 
@@ -22,6 +23,7 @@
 #include <vtkMRMLROS2NodeInternals.h>
 #include <eigen3/Eigen/Geometry>
 #include <sstream>
+#include <unordered_map>
 
 // MoveIt kinematics includes (commented out for faster build)
 // #include <moveit/robot_model_loader/robot_model_loader.h>
@@ -826,6 +828,132 @@ bool vtkMRMLROS2RobotNode::ComputeKDLFK(const std::vector<double>& jointValues,
   outTransform->SetElement(2, 3, frame.p.z() * MM_TO_M_CONVERSION);
 
   return true;
+}
+
+bool vtkMRMLROS2RobotNode::ApplyGhostJoints(const std::vector<double>& jointValues)
+{
+  if (!KDLChain || !KDLFkSolver) {
+    vtkWarningMacro(<< "ApplyGhostJoints: KDL chain or FK solver not initialized");
+    return false;
+  }
+  if (jointValues.size() != KDLChain->getNrOfJoints()) {
+    vtkErrorMacro(<< "ApplyGhostJoints: expected " << KDLChain->getNrOfJoints()
+                  << " joint values but got " << jointValues.size());
+    return false;
+  }
+
+  int ghostModelCount = this->GetNumberOfNodeReferences("ghost_model");
+  int ghostTransformCount = this->GetNumberOfNodeReferences("ghost_transform");
+  if (ghostModelCount == 0 || ghostTransformCount == 0) {
+    vtkWarningMacro(<< "ApplyGhostJoints: no ghost models/transforms to update");
+    return false;
+  }
+
+  int count = std::min(ghostModelCount, ghostTransformCount);
+  bool anyApplied = false;
+
+  // Helper: strip suffixes used for ghost naming
+  auto baseLinkFromGhostName = [](const std::string& name) {
+    std::string s = name;
+    auto stripSuffix = [&](const std::string& suf) {
+      if (s.size() >= suf.size() && s.rfind(suf) == s.size() - suf.size()) {
+        s = s.substr(0, s.size() - suf.size());
+      }
+    };
+    stripSuffix(std::string("_ghost"));
+    stripSuffix(std::string("_model"));
+    return s;
+  };
+
+  // Build child->parent map from existing TF2 lookup nodes so we can
+  // compute relative transforms that match the ghost hierarchy.
+  std::unordered_map<std::string, std::string> childToParent;
+  {
+    auto stripPrefix = [&](const std::string& s) -> std::string {
+      if (!mNthRobot.mTfPrefix.empty() && s.rfind(mNthRobot.mTfPrefix, 0) == 0) {
+        return s.substr(mNthRobot.mTfPrefix.size());
+      }
+      return s;
+    };
+    int lookupCount = this->GetNumberOfNodeReferences("lookup");
+    for (int i = 0; i < lookupCount; ++i) {
+      auto* lu = vtkMRMLROS2Tf2LookupNode::SafeDownCast(this->GetNthNodeReference("lookup", i));
+      if (!lu) { continue; }
+      std::string child = stripPrefix(lu->GetChildID());
+      std::string parent = stripPrefix(lu->GetParentID());
+      if (!child.empty()) {
+        childToParent[child] = parent; // parent may be empty or fixed frame
+      }
+    }
+  }
+
+  // Pre-compute FK for all segments present in the current KDL chain
+  std::unordered_map<std::string, vtkSmartPointer<vtkMatrix4x4>> fkByLink;
+  {
+    for (unsigned int si = 0; si < KDLChain->getNrOfSegments(); ++si) {
+      const auto& seg = KDLChain->getSegment(si);
+      std::string segName = seg.getName();
+      vtkNew<vtkMatrix4x4> m;
+      if (this->ComputeKDLFK(jointValues, m.GetPointer(), segName)) {
+        fkByLink[segName] = m.GetPointer();
+      }
+    }
+  }
+
+  for (int i = 0; i < count; ++i) {
+    vtkMRMLModelNode* ghostModel = vtkMRMLModelNode::SafeDownCast(
+        this->GetNthNodeReference("ghost_model", i));
+    vtkMRMLLinearTransformNode* ghostTransform = vtkMRMLLinearTransformNode::SafeDownCast(
+        this->GetNthNodeReference("ghost_transform", i));
+    if (!ghostModel || !ghostTransform) {
+      continue;
+    }
+
+    const char* nm = ghostModel->GetName();
+    std::string ghostName = nm ? nm : std::string("");
+    std::string linkName = baseLinkFromGhostName(ghostName);
+    if (linkName.empty()) {
+      vtkWarningMacro(<< "ApplyGhostJoints: could not derive link name from ghost '" << ghostName << "'");
+      continue;
+    }
+
+    // Skip if this link is not in the current KDL chain
+    auto itChild = fkByLink.find(linkName);
+    if (itChild == fkByLink.end()) {
+      // Not part of the chain (e.g., branch) – leave as-is
+      continue;
+    }
+
+    // Determine parent link in URDF naming (without tf prefix)
+    std::string parentName;
+    auto itParName = childToParent.find(linkName);
+    if (itParName != childToParent.end()) {
+      parentName = itParName->second;
+    }
+
+    // If no parent in the chain (likely the base), do not overwrite its transform.
+    // Base pose should continue to come from TF to keep the ghost aligned in the scene.
+    auto itParent = fkByLink.find(parentName);
+    if (parentName.empty() || itParent == fkByLink.end()) {
+      continue; // keep base from TF
+    }
+
+    // Compute relative transform: T_parent_child = inv(T_root_parent) * T_root_child
+    vtkSmartPointer<vtkMatrix4x4> T_root_child = itChild->second;
+    vtkSmartPointer<vtkMatrix4x4> T_root_parent = itParent->second;
+
+    vtkNew<vtkMatrix4x4> T_par_inv;
+    vtkMatrix4x4::Invert(T_root_parent, T_par_inv);
+
+    vtkNew<vtkMatrix4x4> T_rel;
+    vtkMatrix4x4::Multiply4x4(T_par_inv, T_root_child, T_rel);
+
+    ghostTransform->SetMatrixTransformToParent(T_rel);
+    ghostTransform->Modified();
+    anyApplied = true;
+  }
+
+  return anyApplied;
 }
 
 void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)

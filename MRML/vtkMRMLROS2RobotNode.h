@@ -87,6 +87,10 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
                     vtkMatrix4x4* outTransform,
                     const std::string& linkName = "");
 
+  // Apply FK to ghost transform chain for given joint values
+  // Joint order must match GetJoints(). Returns true on success.
+  bool ApplyGhostJoints(const std::vector<double>& jointValues);
+
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
   void WriteXML(std::ostream& of, int indent) override;
