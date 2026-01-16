@@ -10,6 +10,10 @@
 
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
+// MoveIt kinematics and planning includes
+#include <moveit/robot_model_loader/robot_model_loader.h>
+#include <moveit/move_group_interface/move_group_interface.h>
+
 // KDL includes
 #include <kdl/chain.hpp>
 #include <kdl/chainfksolverpos_recursive.hpp>
@@ -65,9 +69,8 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupRobotVisualization(void);
 
   // MoveIt IK methods (commented out for faster build)
-  bool setupIKmoveit(const std::string & groupName);
-  std::string FindIKmoveit(const std::string& groupName, 
-                     vtkMatrix4x4* targetPose, 
+  bool setupIKmoveit();
+  std::string FindIKmoveit(vtkMatrix4x4* targetPose, 
                      const std::string& tipLink,
                      const std::vector<double>& seedJointValues,
                      double timeout = 1.0);
@@ -90,6 +93,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
                                                          double velocityScaling = 0.5,
                                                          double accelerationScaling = 0.5,
                                                          double planningTimeSec = 2.0);
+
+  // Python-friendly wrapper: returns JSON string of waypoints
+  // Format: {"joint_names": [...], "points": [{"positions": [...], "velocities": [...], "time_from_start": sec}, ...]}
+  std::string PlanMoveItTrajectoryJSON(const std::string& groupName,
+                                       const std::vector<double>& goalJointValues,
+                                       double velocityScaling = 0.5,
+                                       double accelerationScaling = 0.5,
+                                       double planningTimeSec = 2.0);
 
   // Apply FK to ghost transform chain for given joint values
   // Joint order must match GetJoints(). Returns true on success.
@@ -127,11 +138,11 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   std::unique_ptr<vtkMRMLROS2RobotNodeInternals> mInternals;
   size_t mNumberOfLinks = 0;
 
-  // Cached MoveIt objects for IK (commented out for faster build)
-  // std::unique_ptr<robot_model_loader::RobotModelLoader> RobotModelLoaderPtr;
-  // moveit::core::RobotModelPtr RobotModelPtr;
-  // const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
-  // std::string IKGroupName;
+  // Cached MoveIt objects for IK
+  std::unique_ptr<robot_model_loader::RobotModelLoader> RobotModelLoaderPtr;
+  moveit::core::RobotModelPtr RobotModelPtr;
+  const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
+  std::string IKGroupName;
 
   // KDL solvers
   std::unique_ptr<KDL::Chain> KDLChain;

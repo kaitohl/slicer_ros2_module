@@ -31,6 +31,9 @@
 // MoveIt kinematics and planning includes
 #include <moveit/robot_model_loader/robot_model_loader.h>
 #include <moveit/move_group_interface/move_group_interface.h>
+// ROS2 parameter client for reading remote node parameters
+#include <rclcpp/parameter_client.hpp>
+#include <chrono>
 
 // KDL includes
 #include <kdl/chain.hpp>
@@ -450,7 +453,7 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
 }
 
 // MoveIt IK implementation (commented out for faster build)
-bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
+bool vtkMRMLROS2RobotNode::setupIKmoveit()
 {
   if (!mMRMLROS2Node) {
     vtkErrorMacro(<< "setupIK: ROS2 node not available");
@@ -464,7 +467,7 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
 
   try {
     auto node = mMRMLROS2Node->mInternals->mNodePointer;
-
+    
     // Load and cache RobotModel - automatically discovers kinematics parameters from SRDF
     RobotModelLoaderPtr = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
     RobotModelPtr = RobotModelLoaderPtr->getModel();
@@ -474,21 +477,83 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
       return false;
     }
 
+    // Auto-discover planning group
+    std::string target_group;
+    const auto& group_names = RobotModelPtr->getJointModelGroupNames();
+
+    if (group_names.empty()) {
+      vtkErrorMacro(<< "setupIK: No planning groups available in SRDF");
+      return false;
+    }
+
+    target_group = group_names.front();
+    vtkInfoMacro(<< "setupIK: Using '" << target_group << "'" << " as the IK planning group");
+
+    // Mirror MoveIt kinematics parameters from /move_group to our node for the selected group
+    {
+      using namespace std::chrono_literals;
+      auto params_client = std::make_shared<rclcpp::SyncParametersClient>(node, "/move_group");
+      if (params_client->wait_for_service(500ms)) {
+        std::vector<std::string> kkeys = {
+          std::string("robot_description_kinematics.") + target_group + ".kinematics_solver",
+          std::string("robot_description_kinematics.") + target_group + ".kinematics_solver_timeout",
+          std::string("robot_description_kinematics.") + target_group + ".kinematics_solver_attempts",
+          std::string("robot_description_kinematics.") + target_group + ".kinematics_solver_search_resolution"
+        };
+        try {
+          auto remote_params = params_client->get_parameters(kkeys);
+          for (const auto& p : remote_params) {
+            const auto& name = p.get_name();
+            if (name.empty()) {
+              continue;
+            }
+            try {
+              switch (p.get_type()) {
+                case rclcpp::ParameterType::PARAMETER_STRING:
+                  if (!node->has_parameter(name)) node->declare_parameter(name, std::string(""));
+                  node->set_parameter(p);
+                  break;
+                case rclcpp::ParameterType::PARAMETER_DOUBLE:
+                  if (!node->has_parameter(name)) node->declare_parameter(name, 0.0);
+                  node->set_parameter(p);
+                  break;
+                case rclcpp::ParameterType::PARAMETER_INTEGER:
+                  if (!node->has_parameter(name)) node->declare_parameter(name, 0);
+                  node->set_parameter(p);
+                  break;
+                default:
+                  break;
+              }
+            } catch (const std::exception& e) {
+              vtkWarningMacro(<< "setupIK: failed to mirror param '" << name << "': " << e.what());
+            }
+          }
+        } catch (const std::exception& e) {
+          vtkWarningMacro(<< "setupIK: error fetching params from /move_group: " << e.what());
+        }
+      } else {
+        vtkWarningMacro(<< "setupIK: /move_group parameter service not available; kinematics params may load later");
+      }
+    }
+
     // Cache JointModelGroup
-    JointModelGroupPtr = RobotModelPtr->getJointModelGroup(groupName);
+    JointModelGroupPtr = RobotModelPtr->getJointModelGroup(target_group);
     if (!JointModelGroupPtr) {
-      vtkErrorMacro(<< "setupIK: joint model group '" << groupName << "' not found");
+      vtkErrorMacro(<< "setupIK: joint model group '" << target_group << "' not found");
       return false;
     }
 
-    // Verify solver is available
-    const auto& solver = JointModelGroupPtr->getSolverInstance();
-    if (!solver) {
-      vtkErrorMacro(<< "setupIK: no kinematics solver for group '" << groupName << "'");
-      return false;
+    // Note: Solver may be loaded dynamically at runtime, so we don't strictly require it to exist now
+    const auto& solverInstance = JointModelGroupPtr->getSolverInstance();
+    if (solverInstance) {
+      vtkInfoMacro(<< "setupIK: Kinematics solver found for group '" << target_group << "'");
+    } else {
+      vtkWarningMacro(<< "setupIK: Kinematics solver not yet loaded for group '" << target_group 
+                      << "', but may be available via ROS parameters");
     }
 
-    IKGroupName = groupName;
+    IKGroupName = target_group;
+    vtkInfoMacro(<< "setupIK: Successfully initialized IK for group '" << target_group << "'");
     return true;
   }
   catch (const std::exception& e) {
@@ -498,17 +563,17 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
 }
 
 
-std::string vtkMRMLROS2RobotNode::FindIKmoveit(const std::string& groupName, vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
+std::string vtkMRMLROS2RobotNode::FindIKmoveit(vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
 {
   if (!targetPose) {
     vtkErrorMacro(<< "FindIK: target pose is null");
     return "";
   }
 
-  // Setup IK if needed (or if group changed)
-  if (IKGroupName != groupName || !RobotModelPtr || !JointModelGroupPtr) {
-    if (!setupIK(groupName)) {
-      vtkErrorMacro(<< "FindIK: setupIK failed for group '" << groupName << "'");
+  // Setup IK if needed (only once, since we auto-discover the group)
+  if (!RobotModelPtr || !JointModelGroupPtr) {
+    if (!setupIKmoveit()) {
+      vtkErrorMacro(<< "FindIK: setupIKmoveit failed");
       return "";
     }
   }
@@ -551,6 +616,9 @@ std::string vtkMRMLROS2RobotNode::FindIKmoveit(const std::string& groupName, vtk
 
     // Call IK using setFromIK
     bool found_ik = robot_state.setFromIK(JointModelGroupPtr, pose_msg, tipLink, timeout);
+    if (!found_ik) {
+      vtkWarningMacro(<< "FindIK: IK solution not found for group '" << IKGroupName << "'");
+    }
 
     // Extract joint values (or create NaN values if no solution found)
     std::vector<double> solution;
@@ -857,6 +925,9 @@ moveit_msgs::msg::RobotTrajectory vtkMRMLROS2RobotNode::PlanMoveItTrajectory(con
   moveGroup.setMaxAccelerationScalingFactor(accScale);
   moveGroup.setPlanningTime(planningTimeSec > 0.0 ? planningTimeSec : 2.0);
 
+  // Set start state to current robot state from planning scene
+  moveGroup.setStartStateToCurrentState();
+
   std::map<std::string, double> targets;
   for (size_t i = 0; i < jointNames.size(); ++i) {
     targets[jointNames[i]] = goalJointValues[i];
@@ -874,6 +945,58 @@ moveit_msgs::msg::RobotTrajectory vtkMRMLROS2RobotNode::PlanMoveItTrajectory(con
   }
 
   return traj;
+}
+
+std::string vtkMRMLROS2RobotNode::PlanMoveItTrajectoryJSON(const std::string& groupName,
+                                                           const std::vector<double>& goalJointValues,
+                                                           double velocityScaling,
+                                                           double accelerationScaling,
+                                                           double planningTimeSec)
+{
+  auto traj = PlanMoveItTrajectory(groupName, goalJointValues, velocityScaling, accelerationScaling, planningTimeSec);
+  
+  if (traj.joint_trajectory.points.empty()) {
+    return "{}";  // Empty JSON on failure
+  }
+
+  // Build JSON manually to avoid extra dependencies
+  std::ostringstream json;
+  json << "{\"joint_names\":[";
+  
+  for (size_t i = 0; i < traj.joint_trajectory.joint_names.size(); ++i) {
+    if (i > 0) json << ",";
+    json << "\"" << traj.joint_trajectory.joint_names[i] << "\"";
+  }
+  
+  json << "],\"points\":[";
+  
+  for (size_t i = 0; i < traj.joint_trajectory.points.size(); ++i) {
+    const auto& pt = traj.joint_trajectory.points[i];
+    if (i > 0) json << ",";
+    
+    json << "{\"positions\":[";
+    for (size_t j = 0; j < pt.positions.size(); ++j) {
+      if (j > 0) json << ",";
+      json << pt.positions[j];
+    }
+    
+    json << "],\"velocities\":[";
+    for (size_t j = 0; j < pt.velocities.size(); ++j) {
+      if (j > 0) json << ",";
+      json << pt.velocities[j];
+    }
+    
+    json << "],\"accelerations\":[";
+    for (size_t j = 0; j < pt.accelerations.size(); ++j) {
+      if (j > 0) json << ",";
+      json << pt.accelerations[j];
+    }
+    
+    json << "],\"time_from_start\":" << pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9 << "}";
+  }
+  
+  json << "]}";
+  return json.str();
 }
 
 bool vtkMRMLROS2RobotNode::ApplyGhostJoints(const std::vector<double>& jointValues)
