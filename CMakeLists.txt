@@ -57,9 +57,9 @@ set (
   trajectory_msgs
   moveit_msgs
   rosbag2_interfaces
-  # moveit2 (commented out for faster build)
-  # moveit_ros_planning
-  # moveit_core
+  moveit_ros_planning
+  moveit_core
+  moveit_ros_planning_interface
   # KDL solver
   orocos_kdl
 )

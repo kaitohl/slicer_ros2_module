@@ -24,9 +24,13 @@
 #include <eigen3/Eigen/Geometry>
 #include <sstream>
 #include <unordered_map>
+#include <algorithm>
+#include <map>
+#include <moveit_msgs/msg/robot_trajectory.hpp>
 
-// MoveIt kinematics includes (commented out for faster build)
-// #include <moveit/robot_model_loader/robot_model_loader.h>
+// MoveIt kinematics and planning includes
+#include <moveit/robot_model_loader/robot_model_loader.h>
+#include <moveit/move_group_interface/move_group_interface.h>
 
 // KDL includes
 #include <kdl/chain.hpp>
@@ -36,6 +40,12 @@
 #include <kdl/chainiksolvervel_pinv.hpp>
 #include <kdl/tree.hpp>
 #include <kdl_parser/kdl_parser.hpp>
+
+namespace {
+
+// Removed SerializeJointTrajectoryToJson - JSON serialization not needed
+
+} // namespace
 
 auto const MM_TO_M_CONVERSION = 1000.00;
 
@@ -439,9 +449,8 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
   this->EndModify(wasModifying);
 }
 
-/*
 // MoveIt IK implementation (commented out for faster build)
-bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
+bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
 {
   if (!mMRMLROS2Node) {
     vtkErrorMacro(<< "setupIK: ROS2 node not available");
@@ -455,23 +464,8 @@ bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
 
   try {
     auto node = mMRMLROS2Node->mInternals->mNodePointer;
-    std::string prefix = "robot_description_kinematics." + groupName;
 
-    // Helper for declaring/updating parameters
-    auto ensureParam = [&](const std::string& name, auto value) {
-      if (!node->has_parameter(name)) {
-        node->declare_parameter(name, value);
-      } else {
-        node->set_parameter(rclcpp::Parameter(name, value));
-      }
-    };
-
-    // Set kinematics parameters
-    ensureParam(prefix + ".kinematics_solver", std::string("kdl_kinematics_plugin/KDLKinematicsPlugin"));
-    ensureParam(prefix + ".kinematics_solver_search_resolution", 0.005);
-    ensureParam(prefix + ".kinematics_solver_timeout", 0.05);
-
-    // Load and cache RobotModel
+    // Load and cache RobotModel - automatically discovers kinematics parameters from SRDF
     RobotModelLoaderPtr = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
     RobotModelPtr = RobotModelLoaderPtr->getModel();
 
@@ -504,7 +498,7 @@ bool vtkMRMLROS2RobotNode::setupIK(const std::string & groupName)
 }
 
 
-std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
+std::string vtkMRMLROS2RobotNode::FindIKmoveit(const std::string& groupName, vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
 {
   if (!targetPose) {
     vtkErrorMacro(<< "FindIK: target pose is null");
@@ -576,7 +570,7 @@ std::string vtkMRMLROS2RobotNode::FindIK(const std::string& groupName, vtkMatrix
     return "";
   }
 }
-*/
+
 
 bool vtkMRMLROS2RobotNode::SetupKDLIKWithLimits(void)
 {
@@ -830,6 +824,58 @@ bool vtkMRMLROS2RobotNode::ComputeKDLFK(const std::vector<double>& jointValues,
   return true;
 }
 
+moveit_msgs::msg::RobotTrajectory vtkMRMLROS2RobotNode::PlanMoveItTrajectory(const std::string& groupName,
+                                                         const std::vector<double>& goalJointValues,
+                                                         double velocityScaling,
+                                                         double accelerationScaling,
+                                                         double planningTimeSec)
+{
+  moveit_msgs::msg::RobotTrajectory traj;
+
+  if (!mMRMLROS2Node || !mMRMLROS2Node->mInternals || !mMRMLROS2Node->mInternals->mNodePointer) {
+    vtkErrorMacro(<< "PlanMoveItTrajectory: ROS2 node is not initialized");
+    return traj;
+  }
+  if (groupName.empty()) {
+    vtkErrorMacro(<< "PlanMoveItTrajectory: groupName is empty");
+    return traj;
+  }
+
+  auto node = mMRMLROS2Node->mInternals->mNodePointer;
+  moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
+
+  const auto jointNames = moveGroup.getJointNames();
+  if (jointNames.size() != goalJointValues.size()) {
+    vtkErrorMacro(<< "PlanMoveItTrajectory: expected " << jointNames.size()
+                  << " joint values for group '" << groupName << "' but got " << goalJointValues.size());
+    return traj;
+  }
+
+  const double velScale = std::clamp(velocityScaling, 0.0, 1.0);
+  const double accScale = std::clamp(accelerationScaling, 0.0, 1.0);
+  moveGroup.setMaxVelocityScalingFactor(velScale);
+  moveGroup.setMaxAccelerationScalingFactor(accScale);
+  moveGroup.setPlanningTime(planningTimeSec > 0.0 ? planningTimeSec : 2.0);
+
+  std::map<std::string, double> targets;
+  for (size_t i = 0; i < jointNames.size(); ++i) {
+    targets[jointNames[i]] = goalJointValues[i];
+  }
+
+  moveGroup.setJointValueTarget(targets);
+
+  moveit::planning_interface::MoveGroupInterface::Plan plan;
+  auto result = moveGroup.plan(plan);
+  if (result == moveit::core::MoveItErrorCode::SUCCESS) {
+    traj = plan.trajectory_;
+  } else {
+    vtkErrorMacro(<< "PlanMoveItTrajectory: planning failed for group '" << groupName
+                  << "' with MoveItErrorCode=" << result.val);
+  }
+
+  return traj;
+}
+
 bool vtkMRMLROS2RobotNode::ApplyGhostJoints(const std::vector<double>& jointValues)
 {
   if (!KDLChain || !KDLFkSolver) {
@@ -955,6 +1001,11 @@ bool vtkMRMLROS2RobotNode::ApplyGhostJoints(const std::vector<double>& jointValu
 
   return anyApplied;
 }
+
+
+
+
+
 
 void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)
 {

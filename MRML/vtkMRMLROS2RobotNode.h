@@ -8,10 +8,7 @@
 #include <vtkSlicerROS2ModuleMRMLExport.h>
 #include <vtkMRMLROS2RobotNodeInternals.h>
 
-// MoveIt includes (libraries are linked)
-// #include <moveit/robot_model/robot_model.h>
-// #include <moveit/robot_model_loader/robot_model_loader.h>
-// #include <moveit/robot_state/robot_state.h>
+#include <moveit_msgs/msg/robot_trajectory.hpp>
 
 // KDL includes
 #include <kdl/chain.hpp>
@@ -19,7 +16,6 @@
 #include <kdl/chainiksolverpos_nr.hpp>
 #include <kdl/chainiksolverpos_nr_jl.hpp>
 #include <kdl/chainiksolvervel_pinv.hpp>
-#include <kdl/tree.hpp>
 #include <kdl_parser/kdl_parser.hpp>
 
 class vtkMRMLROS2NodeNode;
@@ -69,12 +65,12 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupRobotVisualization(void);
 
   // MoveIt IK methods (commented out for faster build)
-  // bool setupIK(const std::string & groupName);
-  // std::string FindIK(const std::string& groupName, 
-  //                    vtkMatrix4x4* targetPose, 
-  //                    const std::string& tipLink,
-  //                    const std::vector<double>& seedJointValues,
-  //                    double timeout = 1.0);
+  bool setupIKmoveit(const std::string & groupName);
+  std::string FindIKmoveit(const std::string& groupName, 
+                     vtkMatrix4x4* targetPose, 
+                     const std::string& tipLink,
+                     const std::vector<double>& seedJointValues,
+                     double timeout = 1.0);
 
   // KDL Setup and IK methods
   bool SetupKDLIKWithLimits(void);
@@ -86,6 +82,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   bool ComputeKDLFK(const std::vector<double>& jointValues,
                     vtkMatrix4x4* outTransform,
                     const std::string& linkName = "");
+
+  // Plan a joint-space trajectory using MoveIt for the given group.
+  // goalJointValues must match the group's joint order. Returns empty trajectory on failure.
+  moveit_msgs::msg::RobotTrajectory PlanMoveItTrajectory(const std::string& groupName,
+                                                         const std::vector<double>& goalJointValues,
+                                                         double velocityScaling = 0.5,
+                                                         double accelerationScaling = 0.5,
+                                                         double planningTimeSec = 2.0);
 
   // Apply FK to ghost transform chain for given joint values
   // Joint order must match GetJoints(). Returns true on success.
