@@ -453,8 +453,9 @@ void vtkMRMLROS2RobotNode::ReadXMLAttributes(const char** atts)
 }
 
 // MoveIt IK implementation (commented out for faster build)
-bool vtkMRMLROS2RobotNode::setupIKmoveit()
+bool vtkMRMLROS2RobotNode::setupIKmoveit(const std::string & groupName)
 {
+
   if (!mMRMLROS2Node) {
     vtkErrorMacro(<< "setupIK: ROS2 node not available");
     return false;
@@ -465,12 +466,11 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit()
     return false;
   }
 
-  // Get ROS node pointer
-  auto node = mMRMLROS2Node->mInternals->mNodePointer;
-
   try {
-    // Pre-declare kinematics parameters with defaults before loading RobotModel
-    // This allows MoveIt to discover kinematics plugins during model loading
+    auto node = mMRMLROS2Node->mInternals->mNodePointer;
+    std::string prefix = "robot_description_kinematics." + groupName;
+
+    // Helper for declaring/updating parameters
     auto ensureParam = [&](const std::string& name, auto value) {
       if (!node->has_parameter(name)) {
         node->declare_parameter(name, value);
@@ -479,48 +479,37 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit()
       }
     };
 
-    // Use a temporary loader to discover planning groups without full initialization
-    auto temp_loader = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
-    auto temp_model = temp_loader->getModel();
-    
-    if (!temp_model) {
-      vtkErrorMacro(<< "setupIK: Failed to load RobotModel for group discovery");
-      return false;
-    }
-
-    // Auto-discover planning group
-    const auto& group_names = temp_model->getJointModelGroupNames();
-    if (group_names.empty()) {
-      vtkErrorMacro(<< "setupIK: no planning groups found in robot model");
-      return false;
-    }
-    std::string target_group = group_names.front();
-
-    // Set kinematics parameters for discovered group
-    std::string prefix = "robot_description_kinematics." + target_group;
+    // Set kinematics parameters
     ensureParam(prefix + ".kinematics_solver", std::string("kdl_kinematics_plugin/KDLKinematicsPlugin"));
     ensureParam(prefix + ".kinematics_solver_search_resolution", 0.005);
     ensureParam(prefix + ".kinematics_solver_timeout", 0.05);
 
-    // Reuse the already-loaded model instead of reloading
-    RobotModelPtr = temp_model;
-    RobotModelLoaderPtr = std::move(temp_loader);
+    // Load and cache RobotModel
+    RobotModelLoaderPtr = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
+    RobotModelPtr = RobotModelLoaderPtr->getModel();
+
+    if (!RobotModelPtr) {
+      vtkErrorMacro(<< "setupIK: Failed to load RobotModel");
+      return false;
+    }
 
     // Cache JointModelGroup
-    JointModelGroupPtr = RobotModelPtr->getJointModelGroup(target_group);
+    JointModelGroupPtr = RobotModelPtr->getJointModelGroup(groupName);
+
     if (!JointModelGroupPtr) {
-      vtkErrorMacro(<< "setupIK: joint model group '" << target_group << "' not found");
+      vtkErrorMacro(<< "setupIK: joint model group '" << groupName << "' not found");
       return false;
     }
 
     // Verify solver is available
     const auto& solver = JointModelGroupPtr->getSolverInstance();
+
     if (!solver) {
-      vtkErrorMacro(<< "setupIK: no kinematics solver for group '" << target_group << "'");
+      vtkErrorMacro(<< "setupIK: no kinematics solver for group '" << groupName << "'");
       return false;
     }
-    
-    IKGroupName = target_group;
+
+    IKGroupName = groupName;
     return true;
   }
   catch (const std::exception& e) {
@@ -538,10 +527,8 @@ std::string vtkMRMLROS2RobotNode::FindIKmoveit(vtkMatrix4x4* targetPose, const s
 
   // Setup IK if needed (only once, since we auto-discover the group)
   if (!RobotModelPtr || !JointModelGroupPtr) {
-    if (!setupIKmoveit()) {
       vtkErrorMacro(<< "FindIK: setupIKmoveit failed");
       return "";
-    }
   }
 
   try {
@@ -567,7 +554,7 @@ std::string vtkMRMLROS2RobotNode::FindIKmoveit(vtkMatrix4x4* targetPose, const s
         rot_matrix(i, j) = targetPose->GetElement(i, j);
       }
     }
-
+    
     Eigen::Quaterniond quat(rot_matrix);
     pose_msg.orientation.x = quat.x();
     pose_msg.orientation.y = quat.y();
@@ -640,6 +627,8 @@ bool vtkMRMLROS2RobotNode::SetupKDLIKWithLimits(void)
       
       if (joint.getType() != KDL::Joint::None) {
         std::string joint_name = joint.getName();
+        // Print joint name for debugging
+        vtkInfoMacro(<< "Processing joint: " << joint_name);
         auto urdf_joint = mInternals->mURDFModel.getJoint(joint_name);
           
           // Check if joint is continuous
@@ -796,6 +785,71 @@ std::vector<std::string> vtkMRMLROS2RobotNode::GetJoints()
     }
   }
   return jointNames;
+}
+
+bool vtkMRMLROS2RobotNode::ComputeLocalTransform(const std::vector<double>& jointValues,
+                                                 vtkMatrix4x4* outTransform,
+                                                 const std::string& linkName)
+{
+  if (!outTransform || !KDLChain) return false;
+
+  // 1. Find the Segment and its Joint Index
+  unsigned int segmentIndex = 0;
+  bool found = false;
+  int kdlJointIndex = 0; // Tracks which "q" index corresponds to this segment
+
+  for (unsigned int i = 0; i < KDLChain->getNrOfSegments(); i++) {
+    const KDL::Segment& seg = KDLChain->getSegment(i);
+    
+    // Count moving joints up to this point to find the correct 'q' index
+    if (seg.getJoint().getType() != KDL::Joint::None) {
+        if (seg.getName() == linkName) {
+            segmentIndex = i;
+            found = true;
+            break;
+        }
+        kdlJointIndex++;
+    } else if (seg.getName() == linkName) {
+        // Found it, but it's a fixed joint (no q index increment)
+        segmentIndex = i;
+        found = true;
+        break;
+    }
+  }
+
+  if (!found) {
+     vtkErrorMacro(<< "Link '" << linkName << "' not found.");
+     return false;
+  }
+
+  // 2. Get the specific joint angle for this segment
+  double q_val = 0.0;
+  const KDL::Segment& targetSeg = KDLChain->getSegment(segmentIndex);
+  
+  if (targetSeg.getJoint().getType() != KDL::Joint::None) {
+      if (kdlJointIndex < jointValues.size()) {
+          q_val = jointValues[kdlJointIndex];
+      } else {
+          vtkErrorMacro(<< "Joint index out of bounds.");
+          return false;
+      }
+  }
+
+  // 3. Compute LOCAL Pose (Parent -> Child)
+  // This is what Slicer needs for nested hierarchies.
+  KDL::Frame localFrame = targetSeg.pose(q_val);
+
+  // 4. Convert to VTK Matrix
+  outTransform->Identity();
+  for (int r = 0; r < 3; r++) {
+    for (int c = 0; c < 3; c++) {
+      outTransform->SetElement(r, c, localFrame.M(r, c));
+    }
+    // Scale Meters -> Millimeters
+    outTransform->SetElement(r, 3, localFrame.p(r) * 1000.0);
+  }
+
+  return true;
 }
 
 bool vtkMRMLROS2RobotNode::ComputeKDLFK(const std::vector<double>& jointValues,
@@ -1040,123 +1094,87 @@ bool vtkMRMLROS2RobotNode::PlanAndExecuteMoveItTrajectory(const std::string& gro
 bool vtkMRMLROS2RobotNode::ApplyGhostJoints(const std::vector<double>& jointValues)
 {
   if (!KDLChain || !KDLFkSolver) {
-    vtkWarningMacro(<< "ApplyGhostJoints: KDL chain or FK solver not initialized");
+    vtkErrorMacro(<< "ApplyGhostJoints: KDL Chain/FK solver not initialized.");
     return false;
   }
+
   if (jointValues.size() != KDLChain->getNrOfJoints()) {
     vtkErrorMacro(<< "ApplyGhostJoints: expected " << KDLChain->getNrOfJoints()
                   << " joint values but got " << jointValues.size());
     return false;
   }
 
-  int ghostModelCount = this->GetNumberOfNodeReferences("ghost_model");
-  int ghostTransformCount = this->GetNumberOfNodeReferences("ghost_transform");
-  if (ghostModelCount == 0 || ghostTransformCount == 0) {
-    vtkWarningMacro(<< "ApplyGhostJoints: no ghost models/transforms to update");
+  // Map ghost transform nodes by link name (strip _ghost suffix)
+  std::unordered_map<std::string, vtkMRMLLinearTransformNode*> ghostMap;
+  const int ghostCount = this->GetNumberOfNodeReferences("ghost_transform");
+  if (ghostCount == 0) {
     return false;
   }
-
-  int count = std::min(ghostModelCount, ghostTransformCount);
-  bool anyApplied = false;
-
-  // Helper: strip suffixes used for ghost naming
-  auto baseLinkFromGhostName = [](const std::string& name) {
-    std::string s = name;
-    auto stripSuffix = [&](const std::string& suf) {
-      if (s.size() >= suf.size() && s.rfind(suf) == s.size() - suf.size()) {
-        s = s.substr(0, s.size() - suf.size());
-      }
-    };
-    stripSuffix(std::string("_ghost"));
-    stripSuffix(std::string("_model"));
-    return s;
-  };
-
-  // Build child->parent map from existing TF2 lookup nodes so we can
-  // compute relative transforms that match the ghost hierarchy.
-  std::unordered_map<std::string, std::string> childToParent;
-  {
-    auto stripPrefix = [&](const std::string& s) -> std::string {
-      if (!mNthRobot.mTfPrefix.empty() && s.rfind(mNthRobot.mTfPrefix, 0) == 0) {
-        return s.substr(mNthRobot.mTfPrefix.size());
-      }
-      return s;
-    };
-    int lookupCount = this->GetNumberOfNodeReferences("lookup");
-    for (int i = 0; i < lookupCount; ++i) {
-      auto* lu = vtkMRMLROS2Tf2LookupNode::SafeDownCast(this->GetNthNodeReference("lookup", i));
-      if (!lu) { continue; }
-      std::string child = stripPrefix(lu->GetChildID());
-      std::string parent = stripPrefix(lu->GetParentID());
-      if (!child.empty()) {
-        childToParent[child] = parent; // parent may be empty or fixed frame
-      }
+  for (int i = 0; i < ghostCount; ++i) {
+    auto* node = vtkMRMLLinearTransformNode::SafeDownCast(this->GetNthNodeReference("ghost_transform", i));
+    if (!node) continue;
+    std::string nm = node->GetName() ? node->GetName() : std::string("");
+    const std::string suffix = "_ghost";
+    if (nm.size() > suffix.size() && nm.compare(nm.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      nm = nm.substr(0, nm.size() - suffix.size());
     }
+    ghostMap[nm] = node;
   }
 
-  // Pre-compute FK for all segments present in the current KDL chain
+  // Compute FK for all segments in the chain (root frame -> each link)
   std::unordered_map<std::string, vtkSmartPointer<vtkMatrix4x4>> fkByLink;
-  {
-    for (unsigned int si = 0; si < KDLChain->getNrOfSegments(); ++si) {
-      const auto& seg = KDLChain->getSegment(si);
-      std::string segName = seg.getName();
-      vtkNew<vtkMatrix4x4> m;
-      if (this->ComputeKDLFK(jointValues, m.GetPointer(), segName)) {
-        fkByLink[segName] = m.GetPointer();
-      }
+  for (unsigned int si = 0; si < KDLChain->getNrOfSegments(); ++si) {
+    const auto& seg = KDLChain->getSegment(si);
+    std::string segName = seg.getName();
+    vtkNew<vtkMatrix4x4> m;
+    if (this->ComputeKDLFK(jointValues, m.GetPointer(), segName)) {
+      fkByLink[segName] = m.GetPointer();
     }
   }
 
-  for (int i = 0; i < count; ++i) {
-    vtkMRMLModelNode* ghostModel = vtkMRMLModelNode::SafeDownCast(
-        this->GetNthNodeReference("ghost_model", i));
-    vtkMRMLLinearTransformNode* ghostTransform = vtkMRMLLinearTransformNode::SafeDownCast(
-        this->GetNthNodeReference("ghost_transform", i));
-    if (!ghostModel || !ghostTransform) {
-      continue;
+  // Build parent map from chain order (linear chain)
+  std::unordered_map<std::string, std::string> parentOf;
+  for (unsigned int si = 0; si < KDLChain->getNrOfSegments(); ++si) {
+    const auto& seg = KDLChain->getSegment(si);
+    std::string segName = seg.getName();
+    if (si == 0) {
+      parentOf[segName] = std::string();
+    } else {
+      parentOf[segName] = KDLChain->getSegment(si - 1).getName();
     }
+  }
 
-    const char* nm = ghostModel->GetName();
-    std::string ghostName = nm ? nm : std::string("");
-    std::string linkName = baseLinkFromGhostName(ghostName);
-    if (linkName.empty()) {
-      vtkWarningMacro(<< "ApplyGhostJoints: could not derive link name from ghost '" << ghostName << "'");
-      continue;
-    }
+  bool anyApplied = false;
+  for (const auto& kv : ghostMap) {
+    const std::string& linkName = kv.first;
+    auto* tNode = kv.second;
 
-    // Skip if this link is not in the current KDL chain
     auto itChild = fkByLink.find(linkName);
     if (itChild == fkByLink.end()) {
-      // Not part of the chain (e.g., branch) – leave as-is
+      continue; // not in chain
+    }
+
+    vtkSmartPointer<vtkMatrix4x4> T_root_child = itChild->second;
+    std::string parentName = parentOf[linkName];
+    if (parentName.empty()) {
+      // Base: keep TF-driven base (do not overwrite)
       continue;
     }
 
-    // Determine parent link in URDF naming (without tf prefix)
-    std::string parentName;
-    auto itParName = childToParent.find(linkName);
-    if (itParName != childToParent.end()) {
-      parentName = itParName->second;
+    auto itPar = fkByLink.find(parentName);
+    if (itPar == fkByLink.end()) {
+      continue;
     }
 
-    // If no parent in the chain (likely the base), do not overwrite its transform.
-    // Base pose should continue to come from TF to keep the ghost aligned in the scene.
-    auto itParent = fkByLink.find(parentName);
-    if (parentName.empty() || itParent == fkByLink.end()) {
-      continue; // keep base from TF
-    }
-
-    // Compute relative transform: T_parent_child = inv(T_root_parent) * T_root_child
-    vtkSmartPointer<vtkMatrix4x4> T_root_child = itChild->second;
-    vtkSmartPointer<vtkMatrix4x4> T_root_parent = itParent->second;
-
+    vtkSmartPointer<vtkMatrix4x4> T_root_parent = itPar->second;
     vtkNew<vtkMatrix4x4> T_par_inv;
     vtkMatrix4x4::Invert(T_root_parent, T_par_inv);
 
     vtkNew<vtkMatrix4x4> T_rel;
     vtkMatrix4x4::Multiply4x4(T_par_inv, T_root_child, T_rel);
 
-    ghostTransform->SetMatrixTransformToParent(T_rel);
-    ghostTransform->Modified();
+    tNode->SetMatrixTransformToParent(T_rel);
+    tNode->Modified();
     anyApplied = true;
   }
 

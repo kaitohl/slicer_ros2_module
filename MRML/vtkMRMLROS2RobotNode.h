@@ -69,7 +69,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void SetupRobotVisualization(void);
 
   // MoveIt IK methods (commented out for faster build)
-  bool setupIKmoveit();
+  bool setupIKmoveit(const std::string & groupName);
   std::string FindIKmoveit(vtkMatrix4x4* targetPose, 
                      const std::string& tipLink,
                      const std::vector<double>& seedJointValues,
@@ -85,6 +85,10 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   bool ComputeKDLFK(const std::vector<double>& jointValues,
                     vtkMatrix4x4* outTransform,
                     const std::string& linkName = "");
+  
+  bool ComputeLocalTransform(const std::vector<double>& jointValues,
+                             vtkMatrix4x4* outTransform,
+                             const std::string& linkName);
 
   // Plan a joint-space trajectory using MoveIt for the given group.
   // goalJointValues must match the group's joint order. Returns empty trajectory on failure.
