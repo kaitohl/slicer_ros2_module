@@ -469,7 +469,17 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit()
   auto node = mMRMLROS2Node->mInternals->mNodePointer;
 
   try {
-    // First, load RobotModel temporarily to discover planning groups
+    // Pre-declare kinematics parameters with defaults before loading RobotModel
+    // This allows MoveIt to discover kinematics plugins during model loading
+    auto ensureParam = [&](const std::string& name, auto value) {
+      if (!node->has_parameter(name)) {
+        node->declare_parameter(name, value);
+      } else {
+        node->set_parameter(rclcpp::Parameter(name, value));
+      }
+    };
+
+    // Use a temporary loader to discover planning groups without full initialization
     auto temp_loader = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
     auto temp_model = temp_loader->getModel();
     
@@ -486,31 +496,15 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit()
     }
     std::string target_group = group_names.front();
 
-    // Now set kinematics parameters BEFORE creating the final RobotModelLoader
+    // Set kinematics parameters for discovered group
     std::string prefix = "robot_description_kinematics." + target_group;
-
-    // Helper for declaring/updating parameters
-    auto ensureParam = [&](const std::string& name, auto value) {
-      if (!node->has_parameter(name)) {
-        node->declare_parameter(name, value);
-      } else {
-        node->set_parameter(rclcpp::Parameter(name, value));
-      }
-    };
-
-    // Set kinematics parameters
     ensureParam(prefix + ".kinematics_solver", std::string("kdl_kinematics_plugin/KDLKinematicsPlugin"));
     ensureParam(prefix + ".kinematics_solver_search_resolution", 0.005);
     ensureParam(prefix + ".kinematics_solver_timeout", 0.05);
 
-    // Now load the RobotModel again WITH the kinematics parameters set
-    RobotModelLoaderPtr = std::make_unique<robot_model_loader::RobotModelLoader>(node, "robot_description");
-    RobotModelPtr = RobotModelLoaderPtr->getModel();
-
-    if (!RobotModelPtr) {
-      vtkErrorMacro(<< "setupIK: Failed to load RobotModel with kinematics");
-      return false;
-    }
+    // Reuse the already-loaded model instead of reloading
+    RobotModelPtr = temp_model;
+    RobotModelLoaderPtr = std::move(temp_loader);
 
     // Cache JointModelGroup
     JointModelGroupPtr = RobotModelPtr->getJointModelGroup(target_group);
@@ -534,8 +528,6 @@ bool vtkMRMLROS2RobotNode::setupIKmoveit()
     return false;
   }
 }
-
-
 
 std::string vtkMRMLROS2RobotNode::FindIKmoveit(vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
 {
@@ -679,6 +671,12 @@ bool vtkMRMLROS2RobotNode::SetupKDLIKWithLimits(void)
     KDLRootLink = defaultRoot;
     KDLTipLink = defaultTip;
     KDLUseJointLimits = true;
+
+    // Print joint limits for verification
+    vtkInfoMacro(<< "Joint limits for KDL IK solver:");
+    for (unsigned int j = 0; j < nj; j++) {
+      vtkInfoMacro(<< "  Joint " << j << ": [" << KDLJointMin(j) << ", " << KDLJointMax(j) << "]");
+    }
 
     vtkInfoMacro(<< "setupKDLIKWithLimits: Successfully initialized KDL IK solver (NR_JL) for chain " 
                  << defaultRoot << " -> " << defaultTip 

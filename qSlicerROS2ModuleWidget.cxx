@@ -542,15 +542,16 @@ void qSlicerROS2ModuleWidget::onGhostToggled(QLineEdit* robotNameLineEdit, bool 
       ghost->SetAndObserveMesh(original->GetMesh());
     }
 
-    // Display node copy with subtle visual difference
+    // Display node copy with distinct visual appearance
     vtkMRMLModelDisplayNode* origDisp = vtkMRMLModelDisplayNode::SafeDownCast(original->GetDisplayNode());
     vtkNew<vtkMRMLModelDisplayNode> ghostDisp;
     scene->AddNode(ghostDisp.GetPointer());
     if (origDisp) {
       ghostDisp->Copy(origDisp);
-      // Make ghost slightly transparent to distinguish
-      ghostDisp->SetOpacity(std::max(0.3, std::min(1.0, origDisp->GetOpacity() * 0.8)));
     }
+    // Set ghost to cyan color with high opacity for clear visibility
+    ghostDisp->SetColor(0.0, 1.0, 1.0);  // Cyan
+    ghostDisp->SetOpacity(0.30);  // High opacity for visibility
     ghost->SetAndObserveDisplayNodeID(ghostDisp->GetID());
 
     // Attach ghost to its own independent transform
