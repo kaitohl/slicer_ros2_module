@@ -102,6 +102,23 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
                                        double accelerationScaling = 0.5,
                                        double planningTimeSec = 2.0);
 
+  // Execute a previously planned trajectory using MoveIt
+  // Returns true on successful execution, false otherwise
+  bool ExecuteMoveItTrajectory(const std::string& groupName,
+                               const moveit_msgs::msg::RobotTrajectory& trajectory);
+
+  // Execute the cached trajectory from the last PlanMoveItTrajectoryJSON call
+  // Returns true on successful execution, false otherwise
+  bool ExecuteCachedMoveItTrajectory(const std::string& groupName);
+
+  // Plan and execute a joint-space trajectory in one call
+  // Returns true on successful execution, false otherwise
+  bool PlanAndExecuteMoveItTrajectory(const std::string& groupName,
+                                      const std::vector<double>& goalJointValues,
+                                      double velocityScaling = 0.5,
+                                      double accelerationScaling = 0.5,
+                                      double planningTimeSec = 2.0);
+
   // Apply FK to ghost transform chain for given joint values
   // Joint order must match GetJoints(). Returns true on success.
   bool ApplyGhostJoints(const std::vector<double>& jointValues);
@@ -143,6 +160,9 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   moveit::core::RobotModelPtr RobotModelPtr;
   const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
   std::string IKGroupName;
+
+  // Cached trajectory for execution after planning
+  moveit_msgs::msg::RobotTrajectory CachedTrajectory;
 
   // KDL solvers
   std::unique_ptr<KDL::Chain> KDLChain;
