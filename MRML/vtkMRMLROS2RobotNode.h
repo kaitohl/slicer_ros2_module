@@ -82,13 +82,10 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   // KDL Chain information methods
   std::vector<std::string> GetSegments();
   std::vector<std::string> GetJoints();
-  bool ComputeKDLFK(const std::vector<double>& jointValues,
-                    vtkMatrix4x4* outTransform,
-                    const std::string& linkName = "");
   
-  bool ComputeLocalTransform(const std::vector<double>& jointValues,
-                             vtkMatrix4x4* outTransform,
-                             const std::string& linkName);
+  vtkMatrix4x4* ComputeKDLFK(const std::vector<double>& jointValues, vtkMatrix4x4* outTransform,const std::string& linkName = "");
+  
+  vtkMatrix4x4* ComputeLocalTransform(const std::vector<double>& jointValues, vtkMatrix4x4* outTransform, const std::string& linkName);
 
   // Plan a joint-space trajectory using MoveIt for the given group.
   // goalJointValues must match the group's joint order. Returns empty trajectory on failure.
@@ -123,9 +120,11 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
                                       double accelerationScaling = 0.5,
                                       double planningTimeSec = 2.0);
 
-  // Apply FK to ghost transform chain for given joint values
-  // Joint order must match GetJoints(). Returns true on success.
-  bool ApplyGhostJoints(const std::vector<double>& jointValues);
+  // Execute trajectory asynchronously (non-blocking) in a background thread
+  // Updates the main robot model in real-time during execution
+  // Returns immediately, does not block UI
+  bool ExecuteMoveItTrajectoryAsync(const std::string& groupName,
+                                     const moveit_msgs::msg::RobotTrajectory& trajectory);
 
   // Save and load
   void ReadXMLAttributes(const char** atts) override;
