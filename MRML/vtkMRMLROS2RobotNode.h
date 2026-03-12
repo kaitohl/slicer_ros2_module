@@ -112,13 +112,6 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   // Returns true on successful execution, false otherwise
   bool ExecuteCachedMoveItTrajectory(const std::string& groupName);
 
-  // Plan and execute a joint-space trajectory in one call
-  // Returns true on successful execution, false otherwise
-  bool PlanAndExecuteMoveItTrajectory(const std::string& groupName,
-                                      const std::vector<double>& goalJointValues,
-                                      double velocityScaling = 0.5,
-                                      double accelerationScaling = 0.5,
-                                      double planningTimeSec = 2.0);
 
   // Execute trajectory asynchronously (non-blocking) in a background thread
   // Updates the main robot model in real-time during execution

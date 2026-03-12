@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <map>
+#include <queue>
 #include <thread>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
@@ -591,9 +592,38 @@ std::string vtkMRMLROS2RobotNode::FindIKmoveit(vtkMatrix4x4* targetPose, const s
 bool vtkMRMLROS2RobotNode::SetupKDLIKWithLimits(void)
 {
   try {
-    // Use mURDFModel to get the root and tip link names
-    std::string defaultRoot = mInternals->mURDFModel.getRoot()->name;
-    std::string defaultTip = (mNumberOfLinks > 0) ? mNthRobot.mLinkNames.back() : defaultRoot;
+
+    // Find root and tip links for KDL chain. Root is pulled from the urdf model. The tip is found using a bfs and finds the first leaf link
+    auto rootLink = mInternals->mURDFModel.getRoot();
+    if (!rootLink) {
+      vtkErrorMacro(<< "setupKDLIKWithLimits: URDF root link is null");
+      return false;
+    }
+
+    std::string defaultRoot = rootLink->name;
+    std::string defaultTip = defaultRoot;
+
+    std::queue<std::shared_ptr<const urdf::Link>> bfsQueue;
+    bfsQueue.push(rootLink);
+
+    while (!bfsQueue.empty()) {
+      auto currentLink = bfsQueue.front();
+      bfsQueue.pop();
+
+      if (!currentLink) {
+        continue;
+      }
+
+      if (currentLink->child_links.empty()) {
+        defaultTip = currentLink->name;
+        break;
+      }
+
+      for (const auto& childLink : currentLink->child_links) {
+        bfsQueue.push(childLink);
+      }
+    }
+
     vtkInfoMacro(<< "Auto KDL setup with limits. Root: '" << defaultRoot
                  << "' Tip: '" << defaultTip << "'");
 
@@ -1081,23 +1111,6 @@ bool vtkMRMLROS2RobotNode::ExecuteCachedMoveItTrajectory(const std::string& grou
   return ExecuteMoveItTrajectoryAsync(groupName, CachedTrajectory);
 }
 
-bool vtkMRMLROS2RobotNode::PlanAndExecuteMoveItTrajectory(const std::string& groupName,
-                                                           const std::vector<double>& goalJointValues,
-                                                           double velocityScaling,
-                                                           double accelerationScaling,
-                                                           double planningTimeSec)
-{
-  // First plan the trajectory
-  auto trajectory = PlanMoveItTrajectory(groupName, goalJointValues, velocityScaling, accelerationScaling, planningTimeSec);
-  
-  if (trajectory.joint_trajectory.points.empty()) {
-    vtkErrorMacro(<< "PlanAndExecuteMoveItTrajectory: Planning failed, cannot execute");
-    return false;
-  }
-
-  // Then execute it
-  return ExecuteMoveItTrajectory(groupName, trajectory);
-}
 
 bool vtkMRMLROS2RobotNode::ExecuteMoveItTrajectoryAsync(const std::string& groupName,
                                                         const moveit_msgs::msg::RobotTrajectory& trajectory)
@@ -1124,7 +1137,6 @@ bool vtkMRMLROS2RobotNode::ExecuteMoveItTrajectoryAsync(const std::string& group
   
   return true;
 }
-
 
 void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)
 {
