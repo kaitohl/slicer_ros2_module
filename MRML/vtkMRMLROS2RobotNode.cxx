@@ -1325,7 +1325,7 @@ vtkMatrix4x4* vtkMRMLROS2RobotNode::ComputeLocalTransform(const std::vector<doub
       if (kdlJointIndex < jointValues.size()) {
           q_val = jointValues[kdlJointIndex];
       } else {
-          vtkErrorMacro(<< "Joint index out of bounds.");
+          // vtkErrorMacro(<< "Joint index out of bounds.");
           return nullptr;
       }
   }

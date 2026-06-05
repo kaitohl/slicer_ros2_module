@@ -1688,10 +1688,9 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
         by_name = {n: p for n, p in zip(names, positions)}
         missing = [n for n in joint_names if n not in by_name]
         if missing:
-            print(f"Current state: JointState missing joints: {missing}")
-            return []
+            print(f"Current state: JointState missing joints: {missing}; using 0.0 for them")
 
-        return [by_name[n] for n in joint_names]
+        return [by_name.get(n, 0.0) for n in joint_names]
 
     def getParameterNode(self):
         return ROS2MotionControlParameterNode(super().getParameterNode())
@@ -2342,7 +2341,7 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
                 result = robotmodel.ComputeLocalTransform(joint_values, fk_matrix, link_name)
 
                 if result is None:
-                    print(f"[FK] Failed to compute FK for link '{link_name}'")
+                    # print(f"[FK] Failed to compute FK for link '{link_name}'")
                     continue
 
                 # Find the goal link's transform node
